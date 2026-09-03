@@ -33,6 +33,7 @@ export default async function handler(req, res) {
 
   const { messages = [], today, timezone = SETTINGS.timezone, confirmedAction } = payload;
   const executed = [];
+  let lastToolError = null;
 
   try {
     /* --- Path A: the user confirmed a pending destructive action ------ */
@@ -96,10 +97,42 @@ export default async function handler(req, res) {
             });
           }
 
-          executed.push({ name, ok: !result?.error, label: result?.error ? `Couldn't complete: ${TOOL_LABELS[name] || name}` : DONE_LABELS[name] });
+          if (result?.error) {
+            console.error(`[tool] ${name} failed:`, result.error);
+            // A schema/config error will never succeed on retry — stop now.
+            const fatal = /did not match your Notion database schema|is not a property|could not be found|Invalid request URL|not configured|does not have access|invalid or was revoked/i.test(result.error);
+            if (fatal || lastToolError === result.error) {
+              return json(res, 200, {
+                reply: `I couldn't reach your Notion database.\n\n**Notion says:** ${result.error}\n\n` +
+                       (/Invalid request URL/i.test(result.error)
+                         ? `That means the **database ID is malformed**. In Vercel, set \`NOTION_DB_TASKS\` and \`NOTION_DB_HOMEWORK\` to the **full Notion URL** of each database (copy it straight from your browser's address bar), then redeploy.`
+                         : `Open **/api/diagnose** — it prints your real Notion columns next to what \`api/_config.js\` expects.`),
+                tools: [...executed, { name, ok: false, label: `${TOOL_LABELS[name] || name} — ${result.error}` }]
+              });
+            }
+            lastToolError = result.error;
+          }
+          executed.push({
+            name,
+            ok: !result?.error,
+            label: result?.error ? `${TOOL_LABELS[name] || name} — ${result.error}` : DONE_LABELS[name],
+            error: result?.error || undefined
+          });
           convo.push({ role: 'tool', tool_call_id: call.id, name, content: JSON.stringify(result).slice(0, 12000) });
         }
         continue; // let the AI read the tool output
+      }
+
+      if (executed.length && executed.every((t) => t.ok === false)) {
+        const why = executed[0].error || 'Notion did not accept the request.';
+        return json(res, 200, {
+          reply: `I couldn't read your Notion databases, so I can't answer that accurately yet.\n\n` +
+                 `**Notion says:** ${why}\n\n` +
+                 (/Invalid request URL/i.test(why)
+                   ? `**Fix:** the database ID is malformed. In Vercel set \`NOTION_DB_TASKS\` and \`NOTION_DB_HOMEWORK\` to the **full Notion URL** of each database, then redeploy.`
+                   : `Open **/api/diagnose** for the exact mismatch.`),
+          tools: executed
+        });
       }
 
       const note = ai.toolsUnavailable
@@ -108,6 +141,14 @@ export default async function handler(req, res) {
       return json(res, 200, { reply: (ai.content || 'Done.') + note, tools: executed });
     }
 
+    if (lastToolError) {
+      return json(res, 200, {
+        reply: `I couldn't save that to Notion.\n\n**Notion says:** ${lastToolError}\n\n` +
+               `This is almost always a **column-name mismatch**. Open \`/api/diagnose\` — ` +
+               `it lists your real Notion column names next to what \`api/_config.js\` expects.`,
+        tools: executed
+      });
+    }
     return json(res, 200, { reply: "That took more steps than expected. Could you try asking in a simpler way?", tools: executed });
   } catch (err) {
     // Log the real reason server-side (visible in Vercel -> Logs), but never
@@ -207,6 +248,20 @@ async function callAI(messages) {
     } catch { /* fall through to the report below */ }
   }
 
+  if (lastErr?.orgBlocked) {
+    const e = new Error(
+      `Your Groq account has **all models disabled at the organisation level**.\n\n` +
+      `**Fix it here → https://console.groq.com/settings/limits**\n\n` +
+      `Enable at least one of these (they support tool calling):\n` +
+      `- \`openai/gpt-oss-20b\`  ← recommended\n` +
+      `- \`openai/gpt-oss-120b\`\n\n` +
+      `Then send a message again — no redeploy needed.\n\n` +
+      `_Groq said: "${lastErr.providerSays || 'blocked at the organization level'}"_`
+    );
+    e.hint = 'ai';
+    throw e;
+  }
+
   if (lastErr?.modelGone) {
     const usable = rankModels(live.filter(isChatModel)).slice(0, 12);
     const all = rankModels(live).slice(0, 20);
@@ -235,17 +290,27 @@ async function listModels(base, apiKey) {
 }
 
 /**
- * Exclude models that cannot serve this app:
- *  - speech / embedding / moderation models
- *  - Groq "compound" agentic systems, which have built-in tools and reject a
- *    caller-supplied `tools` array with HTTP 400
- *  - small models with no function-calling support
+ * ALLOWLIST. Providers expose speech, TTS, vision and moderation models in the
+ * same /models list as chat models, so an exclusion list can never be complete
+ * (e.g. "canopylabs/orpheus-v1-english" is a text-to-speech model).
+ * We therefore only accept model families known to do text chat + tool calling.
  */
+const CHAT_FAMILIES = [
+  /^openai\/gpt-oss-\d+b/i,        // gpt-oss-20b / 120b  (best on Groq)
+  /^qwen[/-]/i,                     // qwen3 family
+  /^meta-llama\/llama-4/i,          // llama 4 scout / maverick
+  /^llama-3\.[13]-\d+b/i,           // llama 3.1 / 3.3
+  /^moonshotai\/kimi/i,
+  /^mistral/i,
+  /^gpt-4/i, /^gpt-5/i, /^o[34]-/i, // OpenAI
+  /^grok-/i                         // xAI
+];
+
+const NEVER = /whisper|tts|orpheus|canopylabs|playai|speech|audio|embed|guard|safeguard|moderation|rerank|vision-only|compound|allam|prompt-?guard/i;
+
 function isChatModel(id) {
-  if (/whisper|tts|embed|guard|safeguard|moderation|playai|vision-only/i.test(id)) return false;
-  if (/compound/i.test(id)) return false;          // rejects `tools`
-  if (/allam|gemma-?2?-?9b/i.test(id)) return false; // no tool calling
-  return true;
+  if (NEVER.test(id)) return false;
+  return CHAT_FAMILIES.some((re) => re.test(id));
 }
 
 /** Best general/tool-calling models first. */
@@ -287,6 +352,16 @@ async function requestModel(base, model, messages, apiKey, useTools = true) {
     console.error('[ai error]', res.status, detail.slice(0, 500)); // server log only
     let reason;
     if (res.status === 429) reason = 'The AI service is rate-limited right now. Please wait a few seconds and try again.';
+    else if (/blocked at the organization level|not enabled|enable this model/i.test(detail)) {
+      let says = '';
+      try { says = JSON.parse(detail)?.error?.message || ''; } catch { says = detail.slice(0, 200); }
+      const eb = new Error(`Model "${model}" is blocked in your Groq organisation settings.`);
+      eb.modelGone = true;          // try the next candidate
+      eb.orgBlocked = true;
+      eb.providerSays = scrub(says);
+      eb.hint = 'ai';
+      throw eb;
+    }
     else if (res.status === 401 || res.status === 403) {
       // 401/403 can mean bad key OR "model not enabled for this account".
       // Try other models first; remember the provider's own wording.

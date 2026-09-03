@@ -20,7 +20,16 @@ export default async function handler(req, res) {
 
   try {
     if (action === 'databases') {
-      return json(res, 200, { ok: true, databases: configuredDatabases() });
+      const configured = configuredDatabases();
+      if (configured.length) return json(res, 200, { ok: true, databases: configured });
+      // Nothing configured — show what we auto-discovered instead.
+      try {
+        const found = await Notion.discoverDatabases();
+        return json(res, 200, {
+          ok: true, autoDiscovered: true,
+          databases: found.map((d) => ({ key: d.title.toLowerCase(), name: d.title, id: d.id }))
+        });
+      } catch { return json(res, 200, { ok: true, databases: [] }); }
     }
     if (!process.env.NOTION_TOKEN) {
       return json(res, 200, { ok: false, error: 'Notion is not configured on the server.' });

@@ -283,11 +283,14 @@ body.no-ts .stamp{display:none}
 /* Tool chips inside thread */
 .tool-log{display:flex;flex-direction:column;gap:6px;margin:2px 0 0}
 .tool-chip{
-  display:inline-flex;align-items:center;gap:8px;align-self:flex-start;
-  font-size:12.8px;font-weight:550;color:var(--text-2);
+  display:inline-flex;align-items:flex-start;gap:8px;align-self:flex-start;
+  font-size:12.8px;font-weight:550;color:var(--text-2);line-height:1.5;
   background:var(--bg-sub);border:1px solid var(--border);
-  padding:6px 12px;border-radius:99px;animation:msgIn .3s var(--ease) both;
+  padding:7px 13px;border-radius:14px;animation:msgIn .3s var(--ease) both;
+  max-width:100%;white-space:normal;overflow-wrap:anywhere;text-align:left;
 }
+.tool-chip.fail{border-radius:12px;font-weight:500}
+.tool-chip>span:first-child{flex:0 0 auto;font-weight:700}
 .tool-chip.ok{color:var(--success);border-color:rgba(22,163,74,.3);background:rgba(22,163,74,.07)}
 .tool-chip.fail{color:var(--danger);border-color:rgba(220,38,38,.3);background:var(--danger-soft)}
 .tool-chip .sp{width:12px;height:12px;border-radius:50%;border:2px solid var(--border-strong);border-top-color:var(--accent);animation:spin .7s linear infinite}

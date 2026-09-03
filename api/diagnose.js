@@ -9,7 +9,7 @@
  */
 import { requireAuth } from './_auth.js';
 import { DATABASES, isConfigured } from './_config.js';
-import { cleanEnv, shape } from './_env.js';
+import { cleanEnv, shape, normalizeNotionId } from './_env.js';
 import { detectProvider } from './_provider.js';
 
 const scrub = (m) => String(m || '')
@@ -53,8 +53,15 @@ export default async function handler(req, res) {
 
   /* ---------- 2. Database IDs ---------- */
   for (const [key, db] of Object.entries(DATABASES)) {
-    add(`${db.label} database ID`, isConfigured(key),
-        isConfigured(key) ? '' : `Set NOTION_DB_${key === 'fixedCommitments' ? 'COMMITMENTS' : key.toUpperCase()}.`);
+    const varName = `NOTION_DB_${key.toUpperCase()}`;
+    const rawVal = cleanEnv(process.env[varName], varName);
+    const ok = isConfigured(key);
+    add(`${db.label} database ID`, ok,
+        ok
+          ? `${db.id} ✓`
+          : rawVal
+            ? `❌ "${rawVal.slice(0, 60)}" is not a valid Notion ID. It must contain 32 hex characters. Copy the database URL from Notion and paste the whole thing into ${varName}.`
+            : `Not set. Add ${varName}.`);
   }
 
   /* ---------- 3. Live Notion call ---------- */
@@ -66,6 +73,26 @@ export default async function handler(req, res) {
       const d = await r.json().catch(() => ({}));
       add('Notion token valid', r.ok, r.ok ? (d?.bot?.workspace_name || 'connected') : scrub(d.message || `HTTP ${r.status}`));
     } catch (e) { add('Notion token valid', false, scrub(e.message)); }
+
+    // What databases can the integration actually see?
+    try {
+      const { discoverDatabases } = await import('./_notion.js');
+      const found = await discoverDatabases(true);
+      add('Databases shared with integration', found.length > 0,
+          found.length
+            ? found.map((d) => `"${d.title}" [${d.properties.map((p) => p.name).join(', ')}]`).join('  |  ')
+            : 'None. In Notion open each database → ••• → Connections → add your integration.');
+    } catch (e) { add('Databases shared with integration', false, scrub(e.message)); }
+
+    // Show the auto-resolved schema mapping for each key
+    for (const key of ['tasks', 'homework']) {
+      try {
+        const { resolveSchema } = await import('./_notion.js');
+        const { id, map } = await resolveSchema(key);
+        add(`"${key}" auto-mapping`, true,
+            `db ${id.slice(0, 8)}… → ` + Object.entries(map).map(([f, p]) => `${f}="${p.name}"(${p.type})`).join(', '));
+      } catch (e) { add(`"${key}" auto-mapping`, false, scrub(e.message)); }
+    }
 
     // Try reading each configured database
     for (const [key, db] of Object.entries(DATABASES)) {
@@ -88,10 +115,21 @@ export default async function handler(req, res) {
           // Do the configured property names actually exist?
           if (cols.length) {
             const missing = Object.entries(db.properties)
-              .filter(([, p]) => !cols.includes(p.name))
-              .map(([field, p]) => `${field} -> "${p.name}"`);
+              .filter(([, pr]) => !cols.includes(pr.name))
+              .map(([field, pr]) => `_config.js "${field}" expects a column named "${pr.name}"`);
             add(`"${db.label}" column names match`, missing.length === 0,
-                missing.length ? `Not found in Notion: ${missing.join(', ')}. Fix api/_config.js.` : '');
+                missing.length
+                  ? `❌ MISMATCH. ${missing.join('; ')}. Your Notion columns are: [${cols.join(', ')}]. `
+                    + `Edit api/_config.js so each "name" matches one of those exactly (case-sensitive).`
+                  : 'All configured columns exist in Notion.');
+
+            // Type check for the ones that do exist
+            const typeIssues = [];
+            for (const [field, pr] of Object.entries(db.properties)) {
+              const actual = d.results?.[0]?.properties?.[pr.name]?.type;
+              if (actual && actual !== pr.type) typeIssues.push(`"${pr.name}" is ${actual} in Notion but _config.js says ${pr.type}`);
+            }
+            if (typeIssues.length) add(`"${db.label}" column types match`, false, typeIssues.join('; '));
           }
         } else {
           add(`Read "${db.label}"`, false,
