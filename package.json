@@ -1,0 +1,12 @@
+{
+  "name": "disciplay-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Disciplay AI — a private, Notion-powered AI study assistant for IGCSE students.",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "engines": { "node": ">=18" }
+}
