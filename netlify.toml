@@ -1,0 +1,14 @@
+# Netlify deployment config (free tier).
+# Environment variables go in: Site configuration -> Environment variables.
+[build]
+  publish = "."
+  command = ""
+
+[functions]
+  directory = "api"
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
