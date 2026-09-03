@@ -102,7 +102,10 @@ export default async function handler(req, res) {
         continue; // let the AI read the tool output
       }
 
-      return json(res, 200, { reply: ai.content || 'Done.', tools: executed });
+      const note = ai.toolsUnavailable
+        ? "\n\n_Note: the current AI model can't run Notion actions, so I answered from the conversation only. Set `AI_MODEL` to a function-calling model to enable reading and writing Notion._"
+        : '';
+      return json(res, 200, { reply: (ai.content || 'Done.') + note, tools: executed });
     }
 
     return json(res, 200, { reply: "That took more steps than expected. Could you try asking in a simpler way?", tools: executed });
@@ -193,12 +196,27 @@ async function callAI(messages) {
     e.hint = 'ai';
     throw e;
   }
-  if (lastErr?.modelGone && live.length) {
+  // Last resort: if every model refused the `tools` parameter, run the best one
+  // without tools so the student still gets a useful (read-only) answer.
+  if (lastErr?.badRequest && candidates.length) {
+    try {
+      console.warn('[ai] no model accepted tools — retrying without them');
+      const out = await requestModel(base, candidates[0], messages, apiKey, false);
+      out.toolsUnavailable = true;
+      return out;
+    } catch { /* fall through to the report below */ }
+  }
+
+  if (lastErr?.modelGone) {
     const usable = rankModels(live.filter(isChatModel)).slice(0, 12);
+    const all = rankModels(live).slice(0, 20);
     const e = new Error(
-      `None of the tried models worked on ${p.name}.\n\n` +
-      `**Models your key CAN use:**\n${usable.map((m) => `- \`${m}\``).join('\n')}\n\n` +
-      `Set \`AI_MODEL\` to one of these in Vercel, then redeploy.`
+      `None of the available models accepted the request on ${p.name}.\n\n` +
+      (lastErr.providerSays ? `**${p.name} says:** "${lastErr.providerSays}"\n\n` : '') +
+      (usable.length
+        ? `**Tool-calling candidates tried:**\n${usable.map((m) => `- \`${m}\``).join('\n')}\n\n`
+        : `**No tool-calling models found on this account.**\n\nAll models your key can see:\n${all.map((m) => `- \`${m}\``).join('\n')}\n\n`) +
+      `Set \`AI_MODEL\` to a model that supports function calling, then redeploy.`
     );
     e.hint = 'ai';
     throw e;
@@ -216,9 +234,18 @@ async function listModels(base, apiKey) {
   } catch { return []; }
 }
 
-/** Exclude speech, vision-only, embedding and moderation models. */
+/**
+ * Exclude models that cannot serve this app:
+ *  - speech / embedding / moderation models
+ *  - Groq "compound" agentic systems, which have built-in tools and reject a
+ *    caller-supplied `tools` array with HTTP 400
+ *  - small models with no function-calling support
+ */
 function isChatModel(id) {
-  return !/whisper|tts|embed|guard|safeguard|moderation|distil|playai|vision-only/i.test(id);
+  if (/whisper|tts|embed|guard|safeguard|moderation|playai|vision-only/i.test(id)) return false;
+  if (/compound/i.test(id)) return false;          // rejects `tools`
+  if (/allam|gemma-?2?-?9b/i.test(id)) return false; // no tool calling
+  return true;
 }
 
 /** Best general/tool-calling models first. */
@@ -227,8 +254,6 @@ function rankModels(ids) {
     let n = 0;
     if (/gpt-oss-120b/.test(id)) n += 100;
     if (/gpt-oss-20b/.test(id)) n += 90;
-    if (/compound(?!-mini)/.test(id)) n += 70;
-    if (/compound-mini/.test(id)) n += 65;
     if (/qwen/.test(id)) n += 60;
     if (/llama-4|maverick|scout/.test(id)) n += 55;
     if (/70b|120b/.test(id)) n += 20;
@@ -239,7 +264,7 @@ function rankModels(ids) {
   return [...ids].sort((a, b) => score(b) - score(a));
 }
 
-async function requestModel(base, model, messages, apiKey) {
+async function requestModel(base, model, messages, apiKey, useTools = true) {
 
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
@@ -251,8 +276,9 @@ async function requestModel(base, model, messages, apiKey) {
       model,
       messages,
       temperature: 0.3,
-      tools: TOOL_SCHEMAS.map((t) => ({ type: 'function', function: t })),
-      tool_choice: 'auto'
+      ...(useTools
+        ? { tools: TOOL_SCHEMAS.map((t) => ({ type: 'function', function: t })), tool_choice: 'auto' }
+        : {})
     })
   });
 
@@ -278,7 +304,16 @@ async function requestModel(base, model, messages, apiKey) {
       e2.modelGone = true; e2.hint = 'ai';
       throw e2;
     }
-    else if (res.status === 400) reason = 'The AI provider rejected the request. This usually means the chosen model does not support tool calling.';
+    else if (res.status === 400) {
+      let says = '';
+      try { says = JSON.parse(detail)?.error?.message || ''; } catch { says = detail.slice(0, 200); }
+      const e3 = new Error(`Model "${model}" rejected the request: ${scrub(says) || 'bad request'}`);
+      e3.modelGone = true;          // try the next candidate
+      e3.providerSays = scrub(says);
+      e3.badRequest = true;
+      e3.hint = 'ai';
+      throw e3;
+    }
     else reason = `The AI service returned an error (${res.status}).`;
     const e = new Error(reason);
     e.hint = 'ai';
