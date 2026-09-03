@@ -26,11 +26,11 @@ export const DATABASES = {
     // https://notion.so/<workspace>/<DATABASE_ID>?v=...
     id: env('NOTION_DB_TASKS', 'PASTE_TASKS_DATABASE_ID_HERE'),
     properties: {
-      title:   { name: 'Name',     type: 'title'     }, // ← your title column
-      status:  { name: 'Status',   type: 'status'    }, // 'status' or 'select'
-      dueDate: { name: 'Due Date', type: 'date'      },
-      subject: { name: 'Subject',  type: 'select'    }, // or 'relation'
-      notes:   { name: 'Notes',    type: 'rich_text' }
+      title:   { name: 'Tasks',     type: 'title'     }, // ← your title column
+      status:  { name: 'Checkbox',   type: 'Checkbox'    }, // 'status' or 'select'
+      dueDate: { name: 'Date', type: 'date'      },
+      subject: { name: 'Subject',  type: 'relation'    }, // or 'relation'
+      notes:   { name: 'Description',    type: 'text' }
     },
     // Values your Notion status column actually uses:
     statusValues: { open: 'Not started', inProgress: 'In progress', done: 'Done' }
@@ -41,11 +41,11 @@ export const DATABASES = {
     label: 'Homework',
     id: env('NOTION_DB_HOMEWORK', 'PASTE_HOMEWORK_DATABASE_ID_HERE'),
     properties: {
-      title:   { name: 'Name',     type: 'title'     },
-      status:  { name: 'Status',   type: 'status'    },
-      dueDate: { name: 'Due Date', type: 'date'      },
-      subject: { name: 'Subject',  type: 'select'    },
-      notes:   { name: 'Notes',    type: 'rich_text' }
+      title:   { name: 'Homework',     type: 'title'     },
+      status:  { name: 'Checkbox',   type: 'Checkbox'    },
+      dueDate: { name: 'Date', type: 'date'      },
+      subject: { name: 'Subject',  type: 'relation'    },
+      notes:   { name: 'Description',    type: 'text' }
     },
     statusValues: { open: 'Not started', inProgress: 'In progress', done: 'Done' }
   }
