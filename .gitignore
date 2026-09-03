@@ -1,0 +1,27 @@
+# ---- SECRETS — never commit these ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+
+# dependencies
+node_modules/
+
+# build / platform
+dist/
+build/
+.vercel/
+.netlify/
+.output/
+
+# logs
+*.log
+npm-debug.log*
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

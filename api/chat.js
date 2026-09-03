@@ -150,8 +150,25 @@ async function callAI(messages) {
   }
   const base = p.autoRouted ? p.base : (configuredBase || p.base);
 
-  // Try the configured model first, then this provider's known-good models.
-  const candidates = [...new Set([configuredModel, ...p.models].filter(Boolean))];
+  // Ask the provider which models THIS key can actually use. Hard-coded lists
+  // go stale as providers retire models, so live discovery is authoritative.
+  const live = await listModels(base, apiKey);
+
+  let candidates;
+  if (live.length) {
+    const usable = live.filter(isChatModel);
+    // Prefer the configured model, then known-good ones, then anything usable.
+    const preferred = [configuredModel, ...p.models].filter((m) => m && usable.includes(m));
+    candidates = [...new Set([...preferred, ...rankModels(usable)])];
+    console.log(`[ai] ${usable.length} usable models; trying: ${candidates.slice(0, 4).join(', ')}`);
+  } else {
+    candidates = [...new Set([configuredModel, ...p.models].filter(Boolean))];
+  }
+  if (!candidates.length) {
+    const e = new Error('The AI provider returned no usable models for this API key.');
+    e.hint = 'ai';
+    throw e;
+  }
   let lastErr;
 
   for (const candidate of candidates) {
@@ -176,7 +193,50 @@ async function callAI(messages) {
     e.hint = 'ai';
     throw e;
   }
+  if (lastErr?.modelGone && live.length) {
+    const usable = rankModels(live.filter(isChatModel)).slice(0, 12);
+    const e = new Error(
+      `None of the tried models worked on ${p.name}.\n\n` +
+      `**Models your key CAN use:**\n${usable.map((m) => `- \`${m}\``).join('\n')}\n\n` +
+      `Set \`AI_MODEL\` to one of these in Vercel, then redeploy.`
+    );
+    e.hint = 'ai';
+    throw e;
+  }
   throw lastErr;
+}
+
+/** GET /models — returns the ids this key may use ([] if unsupported). */
+async function listModels(base, apiKey) {
+  try {
+    const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
+    if (!r.ok) return [];
+    const d = await r.json();
+    return (d.data || []).map((m) => m.id).filter(Boolean);
+  } catch { return []; }
+}
+
+/** Exclude speech, vision-only, embedding and moderation models. */
+function isChatModel(id) {
+  return !/whisper|tts|embed|guard|safeguard|moderation|distil|playai|vision-only/i.test(id);
+}
+
+/** Best general/tool-calling models first. */
+function rankModels(ids) {
+  const score = (id) => {
+    let n = 0;
+    if (/gpt-oss-120b/.test(id)) n += 100;
+    if (/gpt-oss-20b/.test(id)) n += 90;
+    if (/compound(?!-mini)/.test(id)) n += 70;
+    if (/compound-mini/.test(id)) n += 65;
+    if (/qwen/.test(id)) n += 60;
+    if (/llama-4|maverick|scout/.test(id)) n += 55;
+    if (/70b|120b/.test(id)) n += 20;
+    if (/instant|mini|8b/.test(id)) n += 5;
+    if (/preview|deprecated/.test(id)) n -= 30;
+    return n;
+  };
+  return [...ids].sort((a, b) => score(b) - score(a));
 }
 
 async function requestModel(base, model, messages, apiKey) {

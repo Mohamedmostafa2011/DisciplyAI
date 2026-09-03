@@ -39,10 +39,17 @@ export const PROVIDERS = {
  */
 export function detectProvider(apiKey, configuredBase) {
   const k = String(apiKey || '');
+  const knownHosts = Object.values(PROVIDERS).map((p) => new URL(p.base).host);
+
   for (const [id, p] of Object.entries(PROVIDERS)) {
     if (p.match(k)) {
-      const mismatch = !!configuredBase && !configuredBase.includes(new URL(p.base).host);
-      return { id, name: p.name, base: p.base, models: p.models, autoRouted: mismatch };
+      const host = new URL(p.base).host;
+      // Only override when the configured URL belongs to a DIFFERENT known
+      // provider (the classic Grok/Groq mix-up). A custom or self-hosted
+      // endpoint is always respected.
+      const pointsAtOtherKnown = !!configuredBase &&
+        knownHosts.some((h) => h !== host && configuredBase.includes(h));
+      return { id, name: p.name, base: p.base, models: p.models, autoRouted: pointsAtOtherKnown };
     }
   }
   // Unknown prefix — honour whatever was configured.
