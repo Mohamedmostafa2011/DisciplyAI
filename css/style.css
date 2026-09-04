@@ -532,22 +532,48 @@ body.no-ts .stamp{display:none}
 .attach-btn:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
 .attach-btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 
-.modal-sub {
-  margin: -4px 0 16px; font-size: 13px; color: var(--text-dim);
+/* Chosen-file line inside the upload dialog. */
+.upload-file {
+  margin: 4px 0 18px;
+  padding: 12px 14px;
+  font-size: 13.5px; line-height: 1.5;
+  color: var(--text-dim);
+  background: var(--bg-soft, rgba(127,127,127,.07));
+  border: 1px solid var(--border);
+  border-radius: 12px;
   overflow-wrap: anywhere;
 }
-.field { display: block; margin-bottom: 14px; }
-.field-label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
+
+.field { display: block; margin-bottom: 4px; }
+.field-label {
+  display: block; margin-bottom: 8px;
+  font-size: 13px; font-weight: 600; color: var(--text);
+}
 .field-input {
-  width: 100%; padding: 10px 12px; font: inherit; font-size: 14px;
-  color: var(--text); background: var(--surface-2);
-  border: 1px solid var(--border); border-radius: 10px;
+  width: 100%; padding: 11px 13px;
+  font: inherit; font-size: 14.5px; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 12px;
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
-.field-input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.field-input::placeholder { color: var(--text-dim); opacity: .7; }
+.field-input:focus {
+  outline: none; border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .18);
+}
+
 .upload-msg {
-  margin: 0 0 12px; padding: 10px 12px; border-radius: 10px;
-  font-size: 13px; line-height: 1.45;
-  background: var(--danger-soft); color: var(--danger);
+  margin: 16px 0 0;
+  padding: 11px 13px;
+  border-radius: 12px;
+  font-size: 13px; line-height: 1.5;
+  background: rgba(220, 38, 38, .09);
+  color: var(--danger);
+  border: 1px solid rgba(220, 38, 38, .22);
   overflow-wrap: anywhere;
 }
-@media (max-width: 560px) { .attach-btn { width: 36px; height: 36px; } }
+
+@media (max-width: 560px) {
+  .attach-btn { width: 36px; height: 36px; }
+  .upload-file { margin-bottom: 16px; }
+}

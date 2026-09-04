@@ -186,27 +186,25 @@
 
 <!-- ============ CONFIRM MODAL ============ -->
 <div id="upload-modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="upload-title">
-  <div class="modal-card">
-    <h2 id="upload-title" class="modal-title">Upload a file</h2>
-    <p id="upload-file" class="modal-sub">No file chosen</p>
+  <div class="modal-backdrop" data-close></div>
+  <div class="modal-card modal-sm">
+    <header class="modal-head"><h2 id="upload-title">Upload a file</h2></header>
+    <div class="modal-body">
+      <p id="upload-file" class="upload-file">No file chosen</p>
 
-    <label class="field">
-      <span class="field-label">Title</span>
-      <input id="upload-name" type="text" class="field-input" placeholder="e.g. Cells revision notes">
-    </label>
+      <label class="field">
+        <span class="field-label">Subject</span>
+        <input id="upload-subject" type="text" class="field-input" list="subject-options"
+               placeholder="e.g. Biology" autocomplete="off">
+        <datalist id="subject-options"></datalist>
+      </label>
 
-    <label class="field">
-      <span class="field-label">Subject</span>
-      <input id="upload-subject" type="text" class="field-input" list="subject-options" placeholder="e.g. Biology">
-      <datalist id="subject-options"></datalist>
-    </label>
-
-    <p id="upload-msg" class="upload-msg" hidden></p>
-
-    <div class="modal-actions">
-      <button id="upload-cancel" type="button" class="btn ghost" data-close>Cancel</button>
-      <button id="upload-go" type="button" class="btn primary">Upload to Notion</button>
+      <p id="upload-msg" class="upload-msg" hidden></p>
     </div>
+    <footer class="modal-foot">
+      <button id="upload-cancel" type="button" class="btn btn-ghost">Cancel</button>
+      <button id="upload-go" type="button" class="btn btn-primary">Upload to Notion</button>
+    </footer>
   </div>
 </div>
 

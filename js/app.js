@@ -268,12 +268,11 @@ function initUpload() {
     }
     pending = file;
     $('#upload-file').textContent = `${file.name} · ${(file.size / 1024).toFixed(0)} KB`;
-    $('#upload-name').value = file.name.replace(/\.[^.]+$/, '');
     $('#upload-msg').hidden = true;
     $('#upload-go').disabled = false;
     $('#upload-go').textContent = 'Upload to Notion';
     UI.openModal('#upload-modal');
-    $('#upload-name').focus();
+    $('#upload-subject').focus();
 
     // Offer the subjects that already exist in Notion.
     const list = await API.listSubjects();
@@ -292,9 +291,9 @@ function initUpload() {
     msg.hidden = true;
 
     try {
+      // The file keeps its own name in Notion — no title is asked for.
       const saved = await API.uploadFile(pending, {
-        subject: $('#upload-subject').value.trim(),
-        title: $('#upload-name').value.trim()
+        subject: $('#upload-subject').value.trim()
       });
       UI.closeModal('#upload-modal');
       UI.toast(`Saved "${saved.name}"${saved.subject ? ` under ${saved.subject}` : ''}.`);
