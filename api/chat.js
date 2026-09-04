@@ -82,7 +82,7 @@ export default async function handler(req, res) {
           // Destructive action -> bounce back to the UI for confirmation.
           if (result?.needsConfirmation) {
             const look = await executeTool('find_item', {
-              database: name === 'delete_homework' ? 'homework' : 'tasks',
+              database: name === 'delete_homework' ? 'homework' : name === 'delete_quiz' ? 'quizzes' : 'tasks',
               query: args.query || ''
             }).catch(() => ({}));
             const target = look?.match || { id: args.id, title: args.title || 'this item', subject: args.subject };
@@ -92,7 +92,7 @@ export default async function handler(req, res) {
               confirm: {
                 tool: name,
                 target: { id: target.id, title: target.title, subject: target.subject },
-                message: `Are you sure you want to delete this ${name === 'delete_homework' ? 'homework' : 'task'}?`
+                message: `Are you sure you want to delete this ${name === 'delete_homework' ? 'homework' : name === 'delete_quiz' ? 'quiz' : 'task'}?`
               }
             });
           }

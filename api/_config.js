@@ -56,6 +56,21 @@ export const DATABASES = {
     },
     statusValues: { open: 'Not started', inProgress: 'In progress', done: 'Done' }
   }
+  ,
+
+  /* ------------------------- QUIZZES & EXAMS ------------------------ */
+  quizzes: {
+    label: 'Quizzes & Exams',
+    id: env('NOTION_DB_QUIZZES', 'PASTE_QUIZZES_DATABASE_ID_HERE'),
+    properties: {
+      title:   { name: 'Name',     type: 'title'     },
+      status:  { name: 'Status',   type: 'status'    },
+      dueDate: { name: 'Date',     type: 'date'      }, // the calendar date
+      subject: { name: 'Subject',  type: 'select'    }, // or 'relation'
+      notes:   { name: 'Notes',    type: 'rich_text' }
+    },
+    statusValues: { open: 'Not started', inProgress: 'Revising', done: 'Done' }
+  }
 };
 
 export const SETTINGS = {

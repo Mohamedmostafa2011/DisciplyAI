@@ -212,6 +212,7 @@ function buildFilter(dbKey, map, { from, to, subject, status, includeDone = fals
 /* ------------------------------------------------------------------ */
 export const getTasks     = (opts = {}) => queryDb('tasks', { filterOpts: opts });
 export const getHomework  = (opts = {}) => queryDb('homework', { filterOpts: opts });
+export const getQuizzes   = (opts = {}) => queryDb('quizzes', { filterOpts: opts });
 
 async function createIn(dbKey, data) {
   const { id, map } = await resolveSchema(dbKey);
@@ -252,10 +253,15 @@ export const updateTask     = (id, d) => updateIn('tasks', id, d);
 export const updateHomework = (id, d) => updateIn('homework', id, d);
 export const deleteTask     = (id) => deleteIn('tasks', id);
 export const deleteHomework = (id) => deleteIn('homework', id);
+export const createQuiz     = (d) => createIn('quizzes', d);
+export const updateQuiz     = (id, d) => updateIn('quizzes', id, d);
+export const deleteQuiz     = (id) => deleteIn('quizzes', id);
 
 /** Find the single best-matching page for an update/delete request. */
 export async function findPage(dbKey, { query, subject }) {
-  const items = dbKey === 'homework' ? await getHomework({ includeDone: true }) : await getTasks({ includeDone: true });
+  const items = dbKey === 'homework' ? await getHomework({ includeDone: true })
+              : dbKey === 'quizzes'  ? await getQuizzes({ includeDone: true })
+              : await getTasks({ includeDone: true });
   const q = String(query || '').toLowerCase();
   const scored = items.map((i) => {
     let s = 0;
@@ -307,7 +313,12 @@ export async function discoverDatabases(force = false) {
 /** Picks the best database for a key ("tasks" / "homework") by name. */
 export function matchDatabase(list, key) {
   const want = key.toLowerCase();
-  const alt = { homework: ['homework', 'hw', 'assignments', 'assignment'], tasks: ['tasks', 'task', 'to-do', 'todo'] }[want] || [want];
+  const alt = {
+    homework: ['homework', 'hw', 'assignments', 'assignment'],
+    tasks: ['tasks', 'task', 'to-do', 'todo'],
+    quizzes: ['quizzes & exams', 'quizzes and exams', 'quizzes', 'quizes', 'quiz',
+              'exams', 'exam', 'tests', 'test', 'assessments', 'assessment']
+  }[want] || [want];
   const scored = list.map((db) => {
     const t = db.title.toLowerCase();
     let s = 0;
@@ -350,7 +361,7 @@ export async function resolveDatabaseId(key) {
 const ALIASES = {
   title:   ['name', 'title', 'task', 'assignment', 'homework', 'item', 'topic'],
   status:  ['status', 'state', 'progress', 'done', 'complete', 'completed'],
-  dueDate: ['due date', 'due', 'deadline', 'date', 'due on', 'when'],
+  dueDate: ['due date', 'due', 'deadline', 'date', 'due on', 'when', 'exam date', 'quiz date', 'scheduled'],
   subject: ['subject', 'course', 'class', 'module', 'topic', 'category'],
   notes:   ['notes', 'note', 'details', 'description', 'comment']
 };
@@ -593,4 +604,111 @@ export async function searchFiles({ query = '', subject = '', limit = 10 } = {})
     out.push({ name, subject: subjectName, page: page.url, links });
   }
   return { database: db.title, count: out.length, files: out };
+}
+
+/* ------------------------------------------------------------------ */
+/* FILE UPLOAD (Notion Direct Upload)                                  */
+/* ------------------------------------------------------------------ */
+/**
+ * Three-step Notion upload: create the File Upload object, send the bytes,
+ * then attach the returned id to a files property.
+ * Notion's single-part limit is 20 MB; uploads must be attached within 1 hour.
+ */
+export async function uploadFileToNotion({ filename, contentType, buffer }) {
+  // 1. create
+  const created = await notion('/file_uploads', {
+    method: 'POST',
+    body: { mode: 'single_part', filename, content_type: contentType }
+  });
+
+  // 2. send bytes as multipart/form-data
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: contentType }), filename);
+  const res = await fetch(`${NOTION_API}/file_uploads/${created.id}/send`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.NOTION_TOKEN}`,
+      'Notion-Version': SETTINGS.notionVersion
+    },
+    body: form
+  });
+  const sent = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const e = new Error(sent.message || `Upload failed (HTTP ${res.status}).`);
+    e.code = sent.code || 'upload_failed';
+    throw e;
+  }
+  return sent.id || created.id;
+}
+
+/**
+ * Uploads a file and files it in the resources database under a subject,
+ * creating the row. Returns the new page.
+ */
+export async function saveFile({ filename, contentType, buffer, subject, title }) {
+  const db = await findFilesDatabase();
+  if (!db) {
+    const e = new Error(
+      'I couldn\'t find a files or resources database in Notion. Create one with a Files & media column and share it with the integration.'
+    );
+    e.code = 'NOT_CONFIGURED';
+    throw e;
+  }
+
+  const meta = await notion(`/databases/${db.id}`);
+  const cols = Object.entries(meta.properties || {}).map(([name, p]) => ({ name, type: p.type, raw: p }));
+  const titleCol = cols.find((c) => c.type === 'title');
+  const fileCol  = cols.find((c) => c.type === 'files');
+  const subjCol  = cols.find((c) => /subject|course|class|topic|module/i.test(c.name));
+
+  if (!fileCol) {
+    const e = new Error(`"${db.title}" has no Files & media column, so I can't attach the upload there.`);
+    e.code = 'NOT_CONFIGURED';
+    throw e;
+  }
+
+  const uploadId = await uploadFileToNotion({ filename, contentType, buffer });
+
+  const properties = {};
+  if (titleCol) properties[titleCol.name] = { title: [{ text: { content: title || filename } }] };
+  properties[fileCol.name] = { files: [{ type: 'file_upload', file_upload: { id: uploadId }, name: filename }] };
+
+  if (subject && subjCol) {
+    if (subjCol.type === 'relation') {
+      const ids = await resolveRelationIds(subjCol.raw?.relation?.database_id, subject);
+      if (ids.length) properties[subjCol.name] = { relation: ids.map((id) => ({ id })) };
+    } else if (subjCol.type === 'multi_select') {
+      properties[subjCol.name] = { multi_select: [{ name: subject }] };
+    } else if (subjCol.type === 'select') {
+      properties[subjCol.name] = { select: { name: subject } };
+    } else if (subjCol.type === 'rich_text') {
+      properties[subjCol.name] = { rich_text: [{ text: { content: subject } }] };
+    }
+  }
+
+  const page = await notion('/pages', { method: 'POST', body: { parent: { database_id: db.id }, properties } });
+  return { id: page.id, url: page.url, name: title || filename, subject: subject || null, database: db.title };
+}
+
+/** Lists the subjects available, for the upload picker. */
+export async function listSubjects() {
+  const list = await discoverDatabases();
+  const subjDb = list.find((d) => /^subjects?$/i.test(d.title));
+  if (subjDb) {
+    const data = await notion(`/databases/${subjDb.id}/query`, { method: 'POST', body: { page_size: 100 } });
+    return (data.results || []).map((pg) => {
+      const t = Object.values(pg.properties || {}).find((x) => x.type === 'title');
+      return t ? t.title.map((v) => v.plain_text).join('') : null;
+    }).filter(Boolean).sort();
+  }
+  // Fall back to the distinct subjects used by the files database.
+  try {
+    const db = await findFilesDatabase();
+    if (!db) return [];
+    const meta = await notion(`/databases/${db.id}`);
+    const entry = Object.entries(meta.properties || {})
+      .find(([n, pr]) => /subject|course|class/i.test(n) && ['select', 'multi_select'].includes(pr.type));
+    if (entry) return (entry[1][entry[1].type]?.options || []).map((o) => o.name).sort();
+  } catch { /* ignore */ }
+  return [];
 }

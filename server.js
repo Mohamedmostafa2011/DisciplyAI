@@ -56,7 +56,9 @@ const server = http.createServer(async (req, res) => {
     }
     try {
       const mod = await import(pathToFileURL(file).href);
-      req.body = req.method === 'POST' ? await readBody(req) : {};
+      // Multipart uploads must reach the handler as a raw stream.
+      const isMultipart = (req.headers['content-type'] || '').includes('multipart/form-data');
+      req.body = (req.method === 'POST' && !isMultipart) ? await readBody(req) : {};
       await mod.default(req, res);
       if (!res.writableEnded) res.end();
     } catch (err) {

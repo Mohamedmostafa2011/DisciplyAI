@@ -85,7 +85,7 @@ export default async function handler(req, res) {
     } catch (e) { add('Databases shared with integration', false, scrub(e.message)); }
 
     // Show the auto-resolved schema mapping for each key
-    for (const key of ['tasks', 'homework']) {
+    for (const key of ['tasks', 'homework', 'quizzes']) {
       try {
         const { resolveSchema } = await import('./_notion.js');
         const { id, map } = await resolveSchema(key);
@@ -102,6 +102,18 @@ export default async function handler(req, res) {
           fdb ? `"${fdb.title}" [${fdb.properties.map((p) => `${p.name}(${p.type})`).join(', ')}]`
               : 'Not found. Share your files/resources database with the integration (••• → Connections).');
     } catch (e) { add('Saved files database', false, scrub(e.message)); }
+
+    // Can we attach uploads to the files database?
+    try {
+      const { findFilesDatabase } = await import('./_notion.js');
+      const fdb = await findFilesDatabase();
+      if (fdb) {
+        const hasFileCol = fdb.properties.some((p) => p.type === 'files');
+        add('File uploads', hasFileCol,
+            hasFileCol ? `uploads will attach to "${fdb.title}"`
+                       : `"${fdb.title}" has no Files & media column — add one so uploads can attach.`);
+      }
+    } catch { /* already reported above */ }
 
     // Try reading each configured database
     for (const [key, db] of Object.entries(DATABASES)) {

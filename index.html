@@ -123,6 +123,11 @@
         <textarea id="input" class="composer-input" rows="1" placeholder="Type a message…"
                   aria-label="Message Disciplay AI" enterkeyhint="send"
                   autocapitalize="sentences" autocorrect="on" spellcheck="true"></textarea>
+        <input id="file-input" type="file" hidden
+               accept=".pdf,.txt,.md,.csv,.html,.json,.png,.jpg,.jpeg,.webp,.docx,.pptx,.xlsx">
+        <button id="attach-btn" type="button" class="attach-btn" aria-label="Upload a file" title="Upload a file">
+          <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="M16.5 6.5v8a4.5 4.5 0 1 1-9 0V6a3 3 0 1 1 6 0v8.5a1.5 1.5 0 1 1-3 0V7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
         <button id="send" type="submit" class="send-btn" aria-label="Send message" disabled>
           <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true"><path d="M4 12l16-8-6.2 8L20 20 4 12Z" fill="currentColor"/></svg>
         </button>
@@ -180,6 +185,31 @@
 </div>
 
 <!-- ============ CONFIRM MODAL ============ -->
+<div id="upload-modal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="upload-title">
+  <div class="modal-card">
+    <h2 id="upload-title" class="modal-title">Upload a file</h2>
+    <p id="upload-file" class="modal-sub">No file chosen</p>
+
+    <label class="field">
+      <span class="field-label">Title</span>
+      <input id="upload-name" type="text" class="field-input" placeholder="e.g. Cells revision notes">
+    </label>
+
+    <label class="field">
+      <span class="field-label">Subject</span>
+      <input id="upload-subject" type="text" class="field-input" list="subject-options" placeholder="e.g. Biology">
+      <datalist id="subject-options"></datalist>
+    </label>
+
+    <p id="upload-msg" class="upload-msg" hidden></p>
+
+    <div class="modal-actions">
+      <button id="upload-cancel" type="button" class="btn ghost" data-close>Cancel</button>
+      <button id="upload-go" type="button" class="btn primary">Upload to Notion</button>
+    </div>
+  </div>
+</div>
+
 <div id="confirm-modal" class="modal" hidden role="alertdialog" aria-modal="true" aria-labelledby="confirm-title">
   <div class="modal-backdrop" data-close></div>
   <div class="modal-card modal-sm">

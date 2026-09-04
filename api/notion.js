@@ -19,6 +19,11 @@ export default async function handler(req, res) {
   const action = url.searchParams.get('action') || 'status';
 
   try {
+    if (action === 'subjects') {
+      try { return json(res, 200, { ok: true, subjects: await Notion.listSubjects() }); }
+      catch { return json(res, 200, { ok: true, subjects: [] }); }
+    }
+
     if (action === 'databases') {
       const configured = configuredDatabases();
       if (configured.length) return json(res, 200, { ok: true, databases: configured });

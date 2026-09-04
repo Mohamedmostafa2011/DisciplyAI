@@ -192,3 +192,16 @@ export function initComposer() {
 
   sync();
 }
+
+
+/**
+ * Called after a successful upload so the conversation reflects the new file
+ * and the student can immediately ask about it.
+ */
+export function noteUpload(saved) {
+  const line = `Saved **${saved.name}**${saved.subject ? ` under **${saved.subject}**` : ''} to your Notion files. ` +
+               `You can ask me to read it, explain it, or quiz you on it.`;
+  const msg = { role: 'assistant', content: line, ts: Date.now(), tools: [] };
+  UI.addMessage(msg);
+  if (activeId) chats.addMessage(activeId, msg);
+}

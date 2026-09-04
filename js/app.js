@@ -112,8 +112,10 @@ function wireGlobalUI() {
   $('#open-settings').addEventListener('click', openSettings);
   $('#profile-btn').addEventListener('click', openSettings);
   $$('[data-close]').forEach((b) => b.addEventListener('click', () => {
-    UI.closeModal('#settings-modal'); UI.closeModal('#confirm-modal');
+    UI.closeModal('#settings-modal'); UI.closeModal('#confirm-modal'); UI.closeModal('#upload-modal');
   }));
+
+  initUpload();
 
   $('#logout').addEventListener('click', logout);
   $('#set-logout').addEventListener('click', logout);
@@ -236,4 +238,73 @@ async function logout() {
   UI.closeModal('#settings-modal');
   await doLogout();
   UI.toast('Signed out');
+}
+
+
+/* ------------------------------------------------------------------ */
+/* File upload                                                         */
+/* ------------------------------------------------------------------ */
+const MAX_UPLOAD = 4 * 1024 * 1024; // matches the serverless body limit
+
+function initUpload() {
+  const btn = $('#attach-btn');
+  const input = $('#file-input');
+  if (!btn || !input) return;
+  let pending = null;
+
+  btn.addEventListener('click', () => {
+    if (API.isDemo()) { UI.toast('Uploads are disabled in Demo Mode.', 'error'); return; }
+    input.click();
+  });
+
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    input.value = '';                        // allow re-picking the same file
+    if (!file) return;
+
+    if (file.size > MAX_UPLOAD) {
+      UI.toast(`"${file.name}" is ${(file.size / 1048576).toFixed(1)} MB. The limit is 4 MB.`, 'error');
+      return;
+    }
+    pending = file;
+    $('#upload-file').textContent = `${file.name} · ${(file.size / 1024).toFixed(0)} KB`;
+    $('#upload-name').value = file.name.replace(/\.[^.]+$/, '');
+    $('#upload-msg').hidden = true;
+    $('#upload-go').disabled = false;
+    $('#upload-go').textContent = 'Upload to Notion';
+    UI.openModal('#upload-modal');
+    $('#upload-name').focus();
+
+    // Offer the subjects that already exist in Notion.
+    const list = await API.listSubjects();
+    const dl = $('#subject-options');
+    if (dl) dl.innerHTML = list.map((n) => `<option value="${n.replace(/"/g, '&quot;')}"></option>`).join('');
+  });
+
+  $('#upload-cancel')?.addEventListener('click', () => { pending = null; UI.closeModal('#upload-modal'); });
+
+  $('#upload-go')?.addEventListener('click', async () => {
+    if (!pending) return;
+    const go = $('#upload-go');
+    const msg = $('#upload-msg');
+    go.disabled = true;
+    go.textContent = 'Uploading…';
+    msg.hidden = true;
+
+    try {
+      const saved = await API.uploadFile(pending, {
+        subject: $('#upload-subject').value.trim(),
+        title: $('#upload-name').value.trim()
+      });
+      UI.closeModal('#upload-modal');
+      UI.toast(`Saved "${saved.name}"${saved.subject ? ` under ${saved.subject}` : ''}.`);
+      Chat.noteUpload?.(saved);
+      pending = null;
+    } catch (err) {
+      msg.textContent = err.message || 'Upload failed.';
+      msg.hidden = false;
+      go.disabled = false;
+      go.textContent = 'Try again';
+    }
+  });
 }

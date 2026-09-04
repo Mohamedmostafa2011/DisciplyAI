@@ -134,6 +134,27 @@ export async function listDatabases() {
  * @param {(evt:{type:'tool',name:string,label:string,phase:string})=>void} onEvent
  * @returns {Promise<{reply:string, tools:Array, confirm?:object}>}
  */
+/** Uploads a file to the Notion resources database. */
+export async function uploadFile(file, { subject = '', title = '' } = {}) {
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+  if (subject) fd.append('subject', subject);
+  if (title) fd.append('title', title);
+  const res = await fetch('/api/upload', { method: 'POST', body: fd, credentials: 'same-origin' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.ok) throw new Error(data.error || 'Upload failed.');
+  return data.file;
+}
+
+/** Subject names for the upload picker. */
+export async function listSubjects() {
+  try {
+    const res = await fetch('/api/notion?action=subjects', { credentials: 'same-origin' });
+    const d = await res.json().catch(() => ({}));
+    return Array.isArray(d.subjects) ? d.subjects : [];
+  } catch { return []; }
+}
+
 export async function sendChat(payload, onEvent) {
   if (state.demo) return Mock.sendChat(payload, onEvent);
   const res = await request('/chat', { method: 'POST', body: payload, timeout: 60000 });
