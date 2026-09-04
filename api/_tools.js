@@ -53,6 +53,14 @@ export const TOOL_SCHEMAS = [
     } }
   },
   {
+    name: 'find_files',
+    description: "Search the student's saved files, resources, notes or past papers in Notion and return direct links. Use whenever they ask for a file, document, PDF, past paper, revision notes or study material for a subject.",
+    parameters: { type: 'object', properties: {
+      query: { type: 'string', description: 'Words from the file or resource name, e.g. "past paper", "chapter 3"' },
+      subject: { type: 'string', description: 'Subject to filter by, e.g. "Biology"' }
+    } }
+  },
+  {
     name: 'update_task',
     description: 'Update a task by its Notion page id (obtain it from find_item).',
     parameters: { type: 'object', required: ['id'], properties: {
@@ -84,6 +92,7 @@ export const TOOL_LABELS = {
   get_tasks: 'Reading your tasks…',
   get_homework: 'Reading your homework…',
   find_item: 'Finding the right item…',
+  find_files: 'Searching your saved files…',
   create_task: 'Creating task…',
   create_homework: 'Creating homework…',
   update_task: 'Updating your task…',
@@ -96,6 +105,7 @@ export const DONE_LABELS = {
   get_tasks: 'Done — tasks loaded.',
   get_homework: 'Done — homework loaded.',
   find_item: 'Done — item located.',
+  find_files: 'Done — files found.',
   create_task: 'Done — task added.',
   create_homework: 'Done — homework added.',
   update_task: 'Done — task updated.',
@@ -120,6 +130,18 @@ export async function executeTool(name, args = {}, ctx = {}) {
       if (args.dueDate && !isDate(args.dueDate)) return { error: 'dueDate must be YYYY-MM-DD.' };
       const fn = name === 'create_task' ? Notion.createTask : Notion.createHomework;
       return { created: await fn(pick(args, ['title', 'subject', 'dueDate', 'notes'])) };
+    }
+
+    case 'find_files': {
+      const { query = '', subject = '' } = args;
+      const res = await Notion.searchFiles({ query, subject, limit: 10 });
+      if (!res.count) {
+        return {
+          found: 0,
+          message: `No files matched${query ? ` "${query}"` : ''}${subject ? ` for ${subject}` : ''} in "${res.database}". Tell the student what you searched for and ask them to check the name.`
+        };
+      }
+      return res;
     }
 
     case 'find_item': {
@@ -168,7 +190,7 @@ function pick(o, keys) {
 
 export function systemPrompt(today, timezone = SETTINGS.timezone) {
   return `You are Disciplay AI, a private academic assistant for an IGCSE student.
-You manage the student's academic information stored in two Notion databases: Tasks and Homework.
+You manage the student's academic information stored in Notion: a Tasks database, a Homework database, and a collection of saved files and study resources.
 Each item has a title, a subject (e.g. Biology, Physics), a due date and a status.
 
 Today's date is ${today} and the student's timezone is ${timezone}.
@@ -179,6 +201,8 @@ Rules:
 - Use the provided tools for every read or write. Never claim an action succeeded unless the tool returned success.
 - Before update_* or delete_*, call find_item to identify the exact Notion page. If the match is ambiguous, ask which item the student means.
 - Deletion always requires explicit user confirmation before delete_* is executed.
+- When the student asks for a file, document, PDF, past paper, revision notes or study material, call find_files. Present each result as a Markdown link using the url from the tool result, e.g. [Biology Paper 2](https://...). If a result has several links, list them under the item name. Never invent a link — only use urls returned by the tool.
+- Note that file links from Notion uploads expire after about an hour, so tell the student to open them soon rather than saving the link for later.
 - Reply in concise, natural, encouraging language. Use Markdown: short headings, bullet or task lists, and simple tables for schedules.
 - Never mention tokens, environment variables, database IDs, internal errors or the Notion API itself.`;
 }

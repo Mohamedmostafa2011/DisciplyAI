@@ -94,6 +94,15 @@ export default async function handler(req, res) {
       } catch (e) { add(`"${key}" auto-mapping`, false, scrub(e.message)); }
     }
 
+    // Saved files / resources database
+    try {
+      const { findFilesDatabase } = await import('./_notion.js');
+      const fdb = await findFilesDatabase();
+      add('Saved files database', !!fdb,
+          fdb ? `"${fdb.title}" [${fdb.properties.map((p) => `${p.name}(${p.type})`).join(', ')}]`
+              : 'Not found. Share your files/resources database with the integration (••• → Connections).');
+    } catch (e) { add('Saved files database', false, scrub(e.message)); }
+
     // Try reading each configured database
     for (const [key, db] of Object.entries(DATABASES)) {
       if (!isConfigured(key)) continue;

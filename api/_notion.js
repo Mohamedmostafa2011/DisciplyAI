@@ -96,6 +96,10 @@ function readProp(prop) {
     case 'url':          return prop.url;
     case 'formula':      return prop.formula?.string ?? prop.formula?.number ?? prop.formula?.date?.start ?? null;
     case 'people':       return prop.people.map((p) => p.name);
+    case 'files':        return (prop.files || []).map((f) => ({
+                           name: f.name,
+                           url: f.type === 'external' ? f.external?.url : f.file?.url
+                         })).filter((f) => f.url);
     case 'relation':     return prop.relation.map((r) => r.id);
     default:             return null;
   }
@@ -110,11 +114,20 @@ function mapPage(page, dbKey, map) {
   return out;
 }
 
-function buildProperties(dbKey, data, map) {
+async function buildProperties(dbKey, data, map) {
   const defs = map || DATABASES[dbKey].properties;
   const props = {};
   for (const [field, p] of Object.entries(defs)) {
-    const built = buildProp(p, data[field]);
+    const value = data[field];
+    if (value === undefined || value === null || value === '') continue;
+
+    if (p.type === 'relation') {
+      // The AI gives us a name; Notion needs page ids.
+      const ids = await resolveRelationIds(p.relationDb, value);
+      if (ids.length) props[p.name] = { relation: ids.map((id) => ({ id })) };
+      continue;
+    }
+    const built = buildProp(p, value);
     if (built) props[p.name] = built;
   }
   return props;
@@ -134,13 +147,33 @@ function assertConfigured(dbKey) {
 async function queryDb(dbKey, { filterOpts, sorts, pageSize = SETTINGS.pageSize } = {}) {
   const { id, map } = await resolveSchema(dbKey);
   const body = { page_size: pageSize };
-  const filter = buildFilter(dbKey, map, filterOpts || {});
+
+  // A subject filter arrives as a NAME. If Subject is a relation we must turn
+  // it into a page id before Notion will accept the filter.
+  const opts = { ...(filterOpts || {}) };
+  if (opts.subject && map.subject?.type === 'relation') {
+    const ids = await resolveRelationIds(map.subject.relationDb, opts.subject, { create: false });
+    if (ids.length) opts.subject = ids[0];
+    else delete opts.subject;   // unknown subject: don't filter everything away
+  }
+  const filter = buildFilter(dbKey, map, opts);
   if (filter) body.filter = filter;
   if (sorts) body.sorts = sorts;
   else if (map.dueDate) body.sorts = [{ property: map.dueDate.name, direction: 'ascending' }];
 
   const data = await notion(`/databases/${id}/query`, { method: 'POST', body });
-  return (data.results || []).map((p) => mapPage(p, dbKey, map));
+  const rows = (data.results || []).map((p) => mapPage(p, dbKey, map));
+
+  // Turn relation page-ids back into readable names for the AI.
+  if (map.subject?.type === 'relation') {
+    const unique = [...new Set(rows.flatMap((r) => r.subject || []))];
+    const names = await expandRelationNames(unique);
+    const lookup = Object.fromEntries(unique.map((id, i) => [id, names[i]]));
+    rows.forEach((r) => {
+      if (Array.isArray(r.subject)) r.subject = r.subject.map((id) => lookup[id] || id).join(', ') || null;
+    });
+  }
+  return rows;
 }
 
 /** Build a Notion filter for a date range / open-status query. */
@@ -151,7 +184,13 @@ function buildFilter(dbKey, map, { from, to, subject, status, includeDone = fals
   if (map.dueDate && from) and.push({ property: map.dueDate.name, date: { on_or_after: from } });
   if (map.dueDate && to)   and.push({ property: map.dueDate.name, date: { on_or_before: to } });
 
-  if (map.subject && subject && map.subject.type !== 'relation') {
+  if (map.subject && subject && map.subject.type === 'relation') {
+    // Resolved by the caller into `subjectIds` — filter on the relation itself.
+    const ids = Array.isArray(subject) ? subject : [subject];
+    if (ids.length && /^[0-9a-f-]{32,36}$/i.test(String(ids[0]))) {
+      and.push({ property: map.subject.name, relation: { contains: String(ids[0]) } });
+    }
+  } else if (map.subject && subject) {
     const t = map.subject.type;
     const op = t === 'multi_select' ? 'multi_select' : t === 'rich_text' ? 'rich_text' : 'select';
     and.push({ property: map.subject.name, [op]: { contains: subject } });
@@ -183,22 +222,22 @@ async function createIn(dbKey, data) {
   }
   let page;
   try {
-    page = await notion('/pages', { method: 'POST', body: { parent: { database_id: id }, properties: buildProperties(dbKey, data, map) } });
+    page = await notion('/pages', { method: 'POST', body: { parent: { database_id: id }, properties: await buildProperties(dbKey, data, map) } });
   } catch (err) {
     // A rejected status value is the most common validation failure — retry
     // without it rather than losing the student's homework entry.
     if (/status|select/i.test(err.message) && data.status) {
       const { status, ...rest } = data;
-      page = await notion('/pages', { method: 'POST', body: { parent: { database_id: id }, properties: buildProperties(dbKey, rest, map) } });
+      page = await notion('/pages', { method: 'POST', body: { parent: { database_id: id }, properties: await buildProperties(dbKey, rest, map) } });
     } else throw err;
   }
-  return mapPage(page, dbKey, map);
+  return expandRow(mapPage(page, dbKey, map), map);
 }
 
 async function updateIn(dbKey, pageId, data) {
   const { map } = await resolveSchema(dbKey);
-  const page = await notion(`/pages/${pageId}`, { method: 'PATCH', body: { properties: buildProperties(dbKey, data, map) } });
-  return mapPage(page, dbKey, map);
+  const page = await notion(`/pages/${pageId}`, { method: 'PATCH', body: { properties: await buildProperties(dbKey, data, map) } });
+  return expandRow(mapPage(page, dbKey, map), map);
 }
 
 /** Notion has no hard delete via API — pages are archived (moved to Trash). */
@@ -323,7 +362,7 @@ export async function resolveSchema(dbKey) {
 
   const id = await resolveDatabaseId(dbKey);
   const meta = await notion(`/databases/${id}`);
-  const cols = Object.entries(meta.properties || {}).map(([name, p]) => ({ name, type: p.type }));
+  const cols = Object.entries(meta.properties || {}).map(([name, p]) => ({ name, type: p.type, raw: p }));
   const def = DATABASES[dbKey];
   const map = {};
 
@@ -344,10 +383,214 @@ export async function resolveSchema(dbKey) {
     if (!hit && field === 'status') hit = cols.find((c) => c.type === 'status')
                                         || cols.find((c) => c.type === 'checkbox');
 
-    if (hit) map[field] = { name: hit.name, type: hit.type };
+    if (hit) {
+      map[field] = { name: hit.name, type: hit.type };
+      // Relations need the target database so we can turn names into page IDs.
+      if (hit.type === 'relation') map[field].relationDb = hit.raw?.relation?.database_id || null;
+    }
   }
 
   const resolved = { id, map, columns: cols };
   _schemaCache.set(dbKey, resolved);
   return resolved;
+}
+
+/** Replaces relation page-ids on a single row with readable names. */
+async function expandRow(row, map) {
+  if (map.subject?.type === 'relation' && Array.isArray(row.subject) && row.subject.length) {
+    row.subject = (await expandRelationNames(row.subject)).join(', ') || null;
+  }
+  return row;
+}
+
+/* ------------------------------------------------------------------ */
+/* RELATION SUPPORT                                                    */
+/* ------------------------------------------------------------------ */
+/**
+ * A Notion relation stores PAGE IDS, but the AI only ever knows a name
+ * ("Biology"). This looks up the page in the related database by title and
+ * returns its id, creating the page when it genuinely doesn't exist yet.
+ */
+const _relCache = new Map();   // `${dbId}:${lowercased name}` -> pageId
+const _titleProp = new Map();  // dbId -> title column name
+
+async function titlePropertyOf(dbId) {
+  if (_titleProp.has(dbId)) return _titleProp.get(dbId);
+  const meta = await notion(`/databases/${dbId}`);
+  const entry = Object.entries(meta.properties || {}).find(([, p]) => p.type === 'title');
+  const name = entry ? entry[0] : 'Name';
+  _titleProp.set(dbId, name);
+  return name;
+}
+
+export async function resolveRelationIds(dbId, value, { create = true } = {}) {
+  if (!dbId || value === undefined || value === null || value === '') return [];
+  const names = (Array.isArray(value) ? value : [value])
+    .map((v) => String(v).trim())
+    .filter(Boolean);
+  if (!names.length) return [];
+
+  const titleName = await titlePropertyOf(dbId);
+  const ids = [];
+
+  for (const name of names) {
+    // Already a page id? Pass it straight through.
+    if (/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(name)) {
+      ids.push(name);
+      continue;
+    }
+    const key = `${dbId}:${name.toLowerCase()}`;
+    if (_relCache.has(key)) { ids.push(_relCache.get(key)); continue; }
+
+    // Exact match first, then a forgiving contains match ("bio" -> "Biology").
+    let hit = null;
+    try {
+      const exact = await notion(`/databases/${dbId}/query`, {
+        method: 'POST',
+        body: { page_size: 1, filter: { property: titleName, title: { equals: name } } }
+      });
+      hit = exact.results?.[0] || null;
+      if (!hit) {
+        const loose = await notion(`/databases/${dbId}/query`, {
+          method: 'POST',
+          body: { page_size: 5, filter: { property: titleName, title: { contains: name } } }
+        });
+        hit = loose.results?.[0] || null;
+      }
+    } catch { /* fall through to create */ }
+
+    if (!hit && create) {
+      hit = await notion('/pages', {
+        method: 'POST',
+        body: {
+          parent: { database_id: dbId },
+          properties: { [titleName]: { title: [{ text: { content: name } }] } }
+        }
+      });
+    }
+    if (hit) { _relCache.set(key, hit.id); ids.push(hit.id); }
+  }
+  return ids;
+}
+
+/** Reads a relation as human names instead of opaque page ids. */
+export async function expandRelationNames(ids) {
+  const out = [];
+  for (const id of (ids || []).slice(0, 10)) {
+    try {
+      const page = await notion(`/pages/${id}`);
+      const tp = Object.values(page.properties || {}).find((p) => p.type === 'title');
+      out.push(tp ? tp.title.map((t) => t.plain_text).join('') : id);
+    } catch { out.push(id); }
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* FILE / RESOURCE LOOKUP                                              */
+/* ------------------------------------------------------------------ */
+/**
+ * Finds the database holding saved files/resources. Matched by name so the
+ * student never has to configure an id.
+ */
+const FILE_DB_ALIASES = ['files', 'file', 'resources', 'resource', 'materials',
+                         'material', 'notes', 'documents', 'docs', 'library',
+                         'saved', 'attachments', 'past papers', 'papers'];
+
+export async function findFilesDatabase() {
+  const list = await discoverDatabases();
+  const scored = list.map((db) => {
+    const t = db.title.toLowerCase();
+    let s = 0;
+    FILE_DB_ALIASES.forEach((a) => { if (t === a) s += 100; else if (t.includes(a)) s += 40; });
+    // A database with an actual files column is very likely the right one.
+    if (db.properties.some((p) => p.type === 'files')) s += 50;
+    return { db, s };
+  }).filter((x) => x.s > 0).sort((a, b) => b.s - a.s);
+  return scored.length ? scored[0].db : null;
+}
+
+/**
+ * Searches saved files by free text and/or subject and returns direct links.
+ *
+ * Handles both common layouts:
+ *   - a "Files" column holding uploads/external links
+ *   - a URL column pointing at the resource
+ * Falls back to the page link itself so the student always gets something.
+ */
+export async function searchFiles({ query = '', subject = '', limit = 10 } = {}) {
+  const db = await findFilesDatabase();
+  if (!db) {
+    const names = (await discoverDatabases()).map((d) => `"${d.title}"`).join(', ') || 'none';
+    const e = new Error(
+      `I couldn't find a files or resources database in Notion. ` +
+      `Databases shared with the integration: ${names}. ` +
+      `Share the database holding your files with the integration (••• → Connections).`
+    );
+    e.code = 'NOT_CONFIGURED';
+    throw e;
+  }
+
+  const meta = await notion(`/databases/${db.id}`);
+  const cols = Object.entries(meta.properties || {}).map(([name, p]) => ({ name, type: p.type, raw: p }));
+  const titleCol = cols.find((c) => c.type === 'title');
+  const fileCols = cols.filter((c) => c.type === 'files');
+  const urlCols  = cols.filter((c) => c.type === 'url');
+  const subjCol  = cols.find((c) => /subject|course|class|topic|module/i.test(c.name));
+
+  // Build a filter; keep it forgiving so a near-miss still returns rows.
+  const and = [];
+  if (query && titleCol) and.push({ property: titleCol.name, title: { contains: query } });
+  if (subject && subjCol) {
+    if (subjCol.type === 'relation') {
+      const ids = await resolveRelationIds(subjCol.raw?.relation?.database_id, subject, { create: false });
+      if (ids.length) and.push({ property: subjCol.name, relation: { contains: ids[0] } });
+    } else if (subjCol.type === 'multi_select') {
+      and.push({ property: subjCol.name, multi_select: { contains: subject } });
+    } else if (subjCol.type === 'select') {
+      and.push({ property: subjCol.name, select: { equals: subject } });
+    } else if (subjCol.type === 'rich_text') {
+      and.push({ property: subjCol.name, rich_text: { contains: subject } });
+    }
+  }
+
+  let results = [];
+  const run = async (filter) => {
+    const body = { page_size: Math.min(limit, 50) };
+    if (filter) body.filter = filter;
+    const data = await notion(`/databases/${db.id}/query`, { method: 'POST', body });
+    return data.results || [];
+  };
+
+  results = await run(and.length ? { and } : undefined);
+  // Nothing matched both terms? Retry on subject alone, then title alone.
+  if (!results.length && and.length > 1) results = await run(and[and.length - 1]);
+  if (!results.length && and.length) results = await run(undefined);
+
+  const out = [];
+  for (const page of results.slice(0, limit)) {
+    const props = page.properties || {};
+    const name = titleCol
+      ? (props[titleCol.name]?.title || []).map((t) => t.plain_text).join('') || 'Untitled'
+      : 'Untitled';
+
+    const links = [];
+    for (const c of fileCols) {
+      for (const f of (props[c.name]?.files || [])) {
+        const url = f.type === 'external' ? f.external?.url : f.file?.url;
+        if (url) links.push({ name: f.name || name, url });
+      }
+    }
+    for (const c of urlCols) if (props[c.name]?.url) links.push({ name, url: props[c.name].url });
+
+    let subjectName = null;
+    if (subjCol) {
+      const v = readProp(props[subjCol.name]);
+      subjectName = Array.isArray(v)
+        ? (subjCol.type === 'relation' ? (await expandRelationNames(v)).join(', ') : v.join(', '))
+        : v;
+    }
+    out.push({ name, subject: subjectName, page: page.url, links });
+  }
+  return { database: db.title, count: out.length, files: out };
 }
