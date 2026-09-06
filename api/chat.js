@@ -194,6 +194,16 @@ async function callAI(messages) {
   }
   const base = p.autoRouted ? p.base : (configuredBase || p.base);
 
+  // Reuse the model we already proved works for this base URL.
+  if (_resolved && _resolved.base === base && Date.now() - _resolved.at < RESOLVED_TTL) {
+    try {
+      return await requestModel(base, _resolved.model, messages, apiKey);
+    } catch (e) {
+      if (!e.modelGone) throw e;      // a real error — surface it
+      _resolved = null;               // model died; fall through to re-discovery
+    }
+  }
+
   // Ask the provider which models THIS key can actually use. Hard-coded lists
   // go stale as providers retire models, so live discovery is authoritative.
   const live = await listModels(base, apiKey);
@@ -217,7 +227,9 @@ async function callAI(messages) {
 
   for (const candidate of candidates) {
     try {
-      return await requestModel(base, candidate, messages, apiKey);
+      const out = await requestModel(base, candidate, messages, apiKey);
+      _resolved = { base, model: candidate, at: Date.now() };   // remember the winner
+      return out;
     } catch (e) {
       lastErr = e;
       if (!e.modelGone) throw e;
@@ -280,14 +292,37 @@ async function callAI(messages) {
 }
 
 /** GET /models — returns the ids this key may use ([] if unsupported). */
+/**
+ * Model discovery is cached for the lifetime of the serverless instance.
+ * Re-listing on every tool round doubled our request count against the
+ * provider's rate limit for zero benefit — the list barely changes.
+ */
+let _modelCache = null;          // { base, models, at }
+const MODEL_TTL = 10 * 60 * 1000;
+
 async function listModels(base, apiKey) {
+  if (_modelCache && _modelCache.base === base && Date.now() - _modelCache.at < MODEL_TTL) {
+    return _modelCache.models;
+  }
   try {
     const r = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${apiKey}` } });
     if (!r.ok) return [];
     const d = await r.json();
-    return (d.data || []).map((m) => m.id).filter(Boolean);
+    const models = (d.data || []).map((m) => m.id).filter(Boolean);
+    _modelCache = { base, models, at: Date.now() };
+    return models;
   } catch { return []; }
 }
+
+/**
+ * The model chosen on the first round is reused for the rest of the
+ * conversation turn, so we don't redo provider detection and ranking on
+ * every single tool round.
+ */
+let _resolved = null;            // { base, model, at }
+const RESOLVED_TTL = 10 * 60 * 1000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * ALLOWLIST. Providers expose speech, TTS, vision and moderation models in the
@@ -329,7 +364,7 @@ function rankModels(ids) {
   return [...ids].sort((a, b) => score(b) - score(a));
 }
 
-async function requestModel(base, model, messages, apiKey, useTools = true) {
+async function requestModel(base, model, messages, apiKey, useTools = true, attempt = 0) {
 
   const res = await fetch(`${base}/chat/completions`, {
     method: 'POST',
@@ -351,7 +386,29 @@ async function requestModel(base, model, messages, apiKey, useTools = true) {
     const detail = await res.text().catch(() => '');
     console.error('[ai error]', res.status, detail.slice(0, 500)); // server log only
     let reason;
-    if (res.status === 429) reason = 'The AI service is rate-limited right now. Please wait a few seconds and try again.';
+    if (res.status === 429) {
+      // Free tiers throttle in bursts. Wait the interval the provider asks for
+      // (or back off exponentially) and retry rather than losing the turn.
+      const ra = Number(res.headers.get('retry-after'));
+      let waitMs = Number.isFinite(ra) && ra > 0 ? ra * 1000 : 0;
+      if (!waitMs) {
+        const m = /try again in ([\d.]+)\s*(ms|s)/i.exec(detail);
+        if (m) waitMs = m[2].toLowerCase() === 'ms' ? Number(m[1]) : Number(m[1]) * 1000;
+      }
+      if (!waitMs) waitMs = 900 * Math.pow(2, attempt);   // 0.9s, 1.8s, 3.6s
+      if (attempt < 3 && waitMs <= 8000) {
+        console.warn(`[ai] 429 — waiting ${waitMs}ms then retrying (attempt ${attempt + 1})`);
+        await sleep(waitMs);
+        return requestModel(base, model, messages, apiKey, useTools, attempt + 1);
+      }
+      const secs = Math.ceil(waitMs / 1000);
+      const e429 = new Error(
+        `You've hit the AI provider's rate limit. Wait about ${secs} second${secs === 1 ? '' : 's'} and send it again.`
+      );
+      e429.hint = 'ai';
+      e429.rateLimited = true;
+      throw e429;
+    }
     else if (/blocked at the organization level|not enabled|enable this model/i.test(detail)) {
       let says = '';
       try { says = JSON.parse(detail)?.error?.message || ''; } catch { says = detail.slice(0, 200); }
